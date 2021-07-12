@@ -1,5 +1,5 @@
 import tasks, events, interface, communications, services
-import utime, uasyncio, machine, micropython, usys, uio
+import utime, machine, micropython, usys, uio
 import axp202, constants_axp202, st7789, pcf8563, esp32, esp
 
 """Important:
@@ -17,6 +17,7 @@ Timer 0 reserved for main loop
 """ deepsleep after ... ms"""
 _deepsleepTime = 1800000 # half a hour
 #_deepsleepTime = 5000
+_mainPeriod = 300
 
 class Main:
     _main = None
@@ -30,11 +31,10 @@ class Main:
         self.eventHandler = None
         self.graphics = None
         self.powerSvc = None
-        self.mainScreen = None
-        self.currentScreen = None
         self.mainTimer = None
         self.overlaySvc = None
         self.settingsSvc = None
+        self.appSvc = None
     
     def start_display(self):
         display_spi = machine.SPI(1,baudrate=32000000,sck=machine.Pin(18, machine.Pin.OUT),mosi=machine.Pin(19, machine.Pin.OUT))
@@ -62,7 +62,7 @@ class Main:
         self.serviceHandler.addService(testsvc)
         self.settingsSvc = services.SettingsProviderService()
         self.serviceHandler.addService(self.settingsSvc)
-        self.eventHandler.subscribe_async(testsvc.buzz, events.EventType.TOUCH_RELEASE | events.EventType.TOUCH_HOLD, testsvc)
+        #self.eventHandler.subscribe_async(testsvc.buzz, events.EventType.TOUCH_RELEASE | events.EventType.TOUCH_HOLD, testsvc)
         self.powerSvc = services.PowerService()
         self.serviceHandler.addService(self.powerSvc)
         self.eventHandler.subscribe_async(self.powerSvc.watchdog, events.EventType.TOUCH_RELEASE | events.EventType.TOUCH_NEW, self.powerSvc)
@@ -76,6 +76,8 @@ class Main:
         self.serviceHandler.addService(self.BLESvc)
         self.overlaySvc = services.OverlayProviderService(self.graphics)
         self.serviceHandler.addService(self.overlaySvc)
+        self.appSvc = services.AppService(self.graphics)
+        
     
     def defineOverlays(self):
         self.overlaySvc.addOverlayElement("wifi", interface.Interface_Button(self.overlaySvc.getGraphics(), 0.65,0.85, 0.35, 0.15, textSource = "Wifi ABORT"))
@@ -113,14 +115,16 @@ class Main:
         self.tm.print("Done")
         self.tm.print("Starting Services")
         self.serviceHandler.start()
-        self.tm.print("Done")
         self.defineOverlays()
+        self.tm.print("Done")
+        self.tm.print("Starting App Handler")
+        self.serviceHandler.addService(self.appSvc)
+        self.eventHandler.subscribe_async(self.appSvc.event, events.EventType.TOUCH_RELEASE | events.EventType.TOUCH_HOLD | events.EventType.TOUCH_NEW | events.EventType.BUTTON | events.EventType.GRAPHIC_UPDATE | events.EventType.BUTTON_LONG, self.appSvc)
+        self.appSvc.start()
+        self.tm.print("Done")
         self.tm.print("Now entering Main Loop and Graphic Mode...")
     
-    async def event_event_screen(self, event):
-        self.currentScreen.update()
-    
-    async def event_long_button(self, event):
+    def event_long_button(self, event):
         ##self.main_deepSleep()
         return
 
@@ -132,18 +136,16 @@ class Main:
         '''self.eventHandler.process()
         self.serviceHandler.process()
         self.mainScreen.tick()
-        uasyncio.get_event_loop().run_forever()
         if self.powerSvc.shouldSleep():
             self.main_lightSleep()'''
         try:
             self.eventHandler.process()
             self.serviceHandler.process()
-            self.currentScreen.tick()
-            uasyncio.get_event_loop().run_forever()
             if self.powerSvc.shouldSleep():
                 self.main_lightSleep()
         except Exception as exception:
             self.mainTimer.deinit()
+            self.eventHandler.stop()
             self.eventHandler.unsubscribe_byClassInstance(self)
             outstring = uio.StringIO()
             usys.print_exception(exception, outstring)
@@ -186,26 +188,11 @@ class Main:
         self.eventHandler.subscribe_async(self.serviceHandler.forceProcessAll_eventHandler, events.EventType.CLOCK_RESET, self.serviceHandler)
         self.eventHandler.subscribe_async(self.event_long_button, events.EventType.BUTTON_LONG, self)
         #raise RuntimeError("testException")
-        mainScreen = interface.Interface(self.graphics)
-        mainScreen.addElement(interface.Interface_JPG(self.graphics, 0,0, "twatch.jpg"))
-        mainScreen.addElement(interface.Interface_Text(self.graphics, 0.9,0, self.batterySvc.getBatteryPercentage))
-        mainScreen.addElement(interface.Interface_Text(self.graphics, 0.7,0, self.batterySvc.getBatteryVoltage))
-        mainScreen.addElement(interface.Interface_TextHuge(self.graphics, 0.25, 0.25, self.timeSvc.getHours))
-        mainScreen.addElement(interface.Interface_TextHuge(self.graphics, 0.3833, 0.25, ":"))
-        mainScreen.addElement(interface.Interface_TextHuge(self.graphics, 0.45, 0.25, self.timeSvc.getMinutes))
-        mainScreen.addElement(interface.Interface_TextHuge(self.graphics, 0.5833, 0.25, ":"))
-        mainScreen.addElement(interface.Interface_TextHuge(self.graphics, 0.65, 0.25, self.timeSvc.getSeconds))
-        mainScreen.addElement(interface.Interface_Button(self.graphics, 0, 0.75, 0.5, 0.25, callback = self.test_scanBLE, textSource = "BLE SCAN"))
-        self.mainScreen = mainScreen
-        self.overlaySvc.interjectInterface(self.mainScreen)
-        self.currentScreen = self.mainScreen
         self.display.fill(st7789.BLACK)
-        self.currentScreen.update()
-        self.eventHandler.subscribe_async(self.event_event_screen, events.EventType.GRAPHIC_UPDATE, self)
         self.powerSvc.reset()
         # use timer for service and events
         self.mainTimer = machine.Timer(0)
-        self.mainTimer.init(period=100, mode=machine.Timer.PERIODIC, callback=Main.IRQ_mainloop)
+        self.mainTimer.init(period=globals()["_mainPeriod"], mode=machine.Timer.PERIODIC, callback=Main.IRQ_mainloop)
         while True:
             machine.idle()
 
@@ -237,11 +224,7 @@ class Main:
             self.sleep_deepSleep()
         self.display.sleep_mode(False)
         self.pmu.enablePower(axp202.AXP202_LDO2)
-        self.mainTimer.init(period=100, mode=machine.Timer.PERIODIC, callback=Main.IRQ_mainloop)
-
-    def test_scanBLE(self):
-        return
-
+        self.mainTimer.init(period=globals()["_mainPeriod"], mode=machine.Timer.PERIODIC, callback=Main.IRQ_mainloop)
 
 main = Main()
 main.main_full()
@@ -257,6 +240,5 @@ while True:
     services.process()
     interfacee.update()
     interfacee.tick()
-    uasyncio.get_event_loop().run_forever()
     utime.sleep_ms(10)"""
 

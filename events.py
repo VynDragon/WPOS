@@ -1,4 +1,3 @@
-import uasyncio
 import machine
 import micropython
 import struct
@@ -34,6 +33,7 @@ class EventHandler:
         self.touchTable = []
         self.IRQ_TOUCH_DATA = bytearray(1)
         self.IRQ_TOUCH_DATA[0] = 0
+        self.stopped = False
 
     def init_handlers(self, axp202):
         EventHandler._current_EventHandler = self
@@ -46,9 +46,11 @@ class EventHandler:
         machine.Pin(35, machine.Pin.IN).irq(handler = EventHandler.IRQ_AXP202, trigger = machine.Pin.IRQ_FALLING, wake = machine.SLEEP | machine.DEEPSLEEP)
 
     def processSubscritionForEvent(self, event):
+        if self.stopped:
+            return
         for function, filter, instance in self.subscribed_async:
             if event.type & filter: 
-                uasyncio.create_task(function(event))
+                function(event)
         for function, filter, instance in self.subscribed:
             if event.type & filter: 
                 function(event)
@@ -57,7 +59,7 @@ class EventHandler:
         toucheds = self.touch.touches
         for touch in toucheds:
             if touch["id"] not in self.touchTable:
-                print("TOUCH NEW " + str(touch))
+                #print("TOUCH NEW " + str(touch))
                 self.processSubscritionForEvent(Event(EventType.TOUCH_NEW, x = touch["x"], y = touch["y"]))
                 self.touchTable.append(touch["id"])
                 
@@ -68,10 +70,10 @@ class EventHandler:
             tmpbuff[i] = self.axp202.irqbuf[i]
         self.axp202.clearIRQ()
         if tmpbuff[2] & 1:
-            print("BUTTON_LONG")
+            #print("BUTTON_LONG")
             self.processSubscritionForEvent(Event(EventType.BUTTON_LONG))
         if tmpbuff[2] & 2:
-            print("BUTTON")
+            #print("BUTTON")
             self.processSubscritionForEvent(Event(EventType.BUTTON))
     
     @staticmethod
@@ -85,16 +87,19 @@ class EventHandler:
 
     def process(self):
         toucheds = self.touch.touches
-        ntouchTable = [x["id"] for x in toucheds]
+        ntouchTable = [(x["id"], x["x"], x["y"]) for x in toucheds]
         if EventHandler._current_EventHandler.IRQ_TOUCH_DATA[0] > 0:
             for touch in toucheds:
                 if touch["id"] in self.touchTable:
-                    print("TOUCH HOLD " + str(touch))
+                    #print("TOUCH HOLD " + str(touch))
                     self.processSubscritionForEvent(Event(EventType.TOUCH_HOLD, x = touch["x"], y = touch["y"]))
             self.touchTable = ntouchTable
         elif len(self.touchTable) > 0:
-            print("TOUCH RELEASE")
-            self.processSubscritionForEvent(Event(EventType.TOUCH_RELEASE))
+            #print("TOUCH RELEASE")
+            if isinstance(self.touchTable[0], tuple):
+                self.processSubscritionForEvent(Event(EventType.TOUCH_RELEASE, x = self.touchTable[0][1], y = self.touchTable[0][2]))
+            else:
+                self.processSubscritionForEvent(Event(EventType.TOUCH_RELEASE, x = -1, y = -1))
             self.touchTable = []
         EventHandler._current_EventHandler.IRQ_TOUCH_DATA[0] = 0
 
@@ -110,3 +115,6 @@ class EventHandler:
     def unsubscribe_byClassInstance(self, classinstance):
         self.subscribed = [var for var in self.subscribed if var[1] != classinstance]
         self.subscribed_async = [var for var in self.subscribed if var[1] != classinstance]
+    
+    def stop(self):
+        self.stopped = True

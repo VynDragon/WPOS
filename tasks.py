@@ -1,4 +1,4 @@
-import uasyncio, utime
+import utime
 
 """milliseconds"""
 SERVICEFREQUENCY = 10
@@ -33,7 +33,7 @@ class Service:
         derived must call parent's"""
         
 
-    async def process(self):
+    def process(self):
         """ do something at interval """
 
 class Foreground:
@@ -47,7 +47,7 @@ class Foreground:
     def tick(self):
         """ do something every actable unit """
 
-    async def event(self, event):
+    def event(self, event):
         """ bruh bruh bruh """
 
 class ServiceHandler:
@@ -73,10 +73,10 @@ class ServiceHandler:
         currenttime = utime.time()
         for service in self.services:
             if service.last_ran + service.interval < currenttime:
-                uasyncio.create_task(service.process())
+                service.process()
                 service.last_ran = currenttime
             if currenttime < service.last_ran:
-                uasyncio.create_task(service.process())
+                service.process()
                 service.last_ran = currenttime
         """if self.countercheck > 30:
             print(self.averagetickbetweenrun)
@@ -90,10 +90,10 @@ class ServiceHandler:
     def forceProcessAll(self):
         currenttime = utime.time()
         for service in self.services:
-            uasyncio.create_task(service.process())
+            service.process()
             service.last_ran = currenttime
             
-    async def forceProcessAll_eventHandler(self, event):
+    def forceProcessAll_eventHandler(self, event):
         self.forceProcessAll()
 
     def suspend(self):

@@ -1,5 +1,6 @@
 import tasks, events, communications, interface
-import machine, utime, struct, ntptime, uasyncio, ujson
+import machine, utime, struct, ntptime, ujson
+
 
 class PowerService(tasks.Service):
     _sleep_time = 10
@@ -12,14 +13,14 @@ class PowerService(tasks.Service):
     def start(self):
         super().start()
     
-    async def process(self):
+    def process(self):
         super().process()
         if self.last_dog + self._sleep_time < utime.time():
             self.shouldsleep = True
         else:
             self.shouldsleep = False
       
-    async def watchdog(self, event):
+    def watchdog(self, event):
         self.last_dog = utime.time()
         self.shouldsleep = False
     
@@ -31,12 +32,17 @@ class PowerService(tasks.Service):
         self.shouldsleep = False
 
 class BatteryService(tasks.Service):
+    _current_BatteryService = None
     def __init__(self, pmu):
         super().__init__("BatteryService", 1)
         self.pmu = pmu
         self.percentage = 100
 
-    async def process(self):
+    def start(self):
+        super().start()
+        BatteryService._current_BatteryService = self
+
+    def process(self):
         super().process()
         if self.percentage != self.pmu.getBattPercentage():
             events.EventHandler._current_EventHandler.trigger_event(events.EventType.GRAPHIC_UPDATE)
@@ -45,6 +51,7 @@ class BatteryService(tasks.Service):
             # BAD
             print("BATTERY VALUE BAD REBOOTING PMU")
             #self.pmu.shutdown()
+        
     
     def getBatteryPercentage(self): #returns bad stuffs?
         return str(self.percentage)
@@ -64,7 +71,7 @@ class OverlayProviderService(tasks.Service, interface.Interface):
         tasks.Service.start(self)
         OverlayProviderService._current_OverlayProviderService = self
 
-    async def process(self):
+    def process(self):
         super().process()
         
     
@@ -129,13 +136,14 @@ class TimeService(tasks.Service):
         super().__init__("TimeService", 0, suspend_is_stop = False)
         self.rtc = None
         self.synced = False
+        self.syncing = False
         self.lastsynced = 0
         self.currentDate = None
 
     def start(self):
         super().start()
         self.rtc = machine.RTC()
-        _current_TimeSvc = self
+        TimeService._current_TimeSvc = self
         year, month, day, weekday, hour, minute, second = struct.unpack("HBBBBBB", self.readRtcData(0, struct.calcsize("HBBBBBB")))
         self.rtc.init((year, month, day, weekday, hour, minute, second, 0))
         self.currentDate = self.rtc.datetime()
@@ -162,10 +170,11 @@ class TimeService(tasks.Service):
         return mem[offset : offset+length]
 
 
-    async def process(self):
+    def process(self):
         super().process()
-        if self.synced == False:
+        if self.synced == False and self.syncing == False:
             communications.WLANService.getWifiSvc().queueRequest(self.wifiSetTimeCallBack)
+            self.syncing = True
         self.currentDate = self.rtc.datetime()
         events.EventHandler._current_EventHandler.trigger_event(events.EventType.GRAPHIC_UPDATE)
         
@@ -187,6 +196,7 @@ class TimeService(tasks.Service):
         self.writeRtcData(0, struct.pack("HBBBBBB", self.currentDate[0], self.currentDate[1], self.currentDate[2], self.currentDate[3], self.currentDate[4], self.currentDate[5], self.currentDate[6]))
         events.EventHandler._current_EventHandler.trigger_event(events.EventType.CLOCK_RESET)
         self.synced = True
+        self.syncing = False
         
     #@staticmethod
     #def getTimeSvc():
@@ -198,19 +208,72 @@ class TestService(tasks.Service):
         super().__init__("TestService", 10)
         self.cycle_hold = 0
     
-    async def buzz(self, event):
+    def buzz(self, event):
         if event.type == events.EventType.TOUCH_HOLD:
             self.cycle_hold += 1
             if self.cycle_hold > 5:
                 buzz = machine.Pin(4, machine.Pin.OUT)
                 buzz.on()
-                await uasyncio.sleep_ms(50)
+                await utime.sleep_ms(50)
                 buzz.off()
                 self.cycle_hold = 0
         if event.type == events.EventType.TOUCH_RELEASE:
             self.cycle_hold = 0
     
-    async def process(self):
+    def process(self):
         super().process()
         print("every 10 seconds in africa, a 6th of a minute passes")
 
+
+class AppService(tasks.Service):
+    def __init__(self, graphics):
+        super().__init__("AppService", 0, suspend_is_stop = False)
+        self.appslist = []
+        self.graphics = graphics
+    
+    def startApp(self, name):
+        app = __import__("apps_" + name, globals(), locals(), ['*'], 0)
+        app.start(self.graphics)
+        self.appslist.append(app)
+        print("started: " + str(app))
+        return app
+        
+    def stopApp(self):
+        self.appslist[-1].stop()
+        stopped = self.appslist.pop()
+        print("stopped: " + str(stopped))
+    
+    def start(self):
+        super().start()
+        self.startApp("main")
+        
+    def stop(self):
+        super().stop()
+        while len(appslist) > 0:
+            self.stopApp(self.appslist[-1])
+            
+    def event(self, event):
+        if event.type == events.EventType.BUTTON_LONG:
+            if len(self.appslist) > 1:
+                self.stopApp(self.appslist[-1])
+        elif event.type == events.EventType.GRAPHIC_UPDATE:
+            self.appslist[-1].update()
+        else:
+            self.appslist[-1].event(event)
+        
+        
+    def suspend(self):
+        """ do something before sleeping
+        derived must call parent's"""
+        
+
+    def unsuspend(self):
+        """ do something after sleeping
+        derived must call parent's"""
+
+    def process(self):
+        if len(self.appslist) < 1:
+            raise RuntimeError("Bad AppHandler Status")
+        if self.appslist[-1].process() != 0:
+            self.stopApp()
+        return None

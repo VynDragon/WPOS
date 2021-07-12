@@ -94,7 +94,7 @@ class Interface_Element:
     def tick(self):
         """update nongraphic stuffs"""
 
-    async def event(self, event):
+    def event(self, event):
         """process event"""
 
 class Interface_Bitmap(Interface_Element):
@@ -123,16 +123,23 @@ class Interface_Button(Interface_Element):
         self.sy = sy
         self.callback = callback
         self.pressing = False
+        self.held = False
     
     def update(self):
         super().update()
         self.graphics.drawButtonOutline(self.x, self.y, self.sx, self.sy)
         self.text.update()
+        if self.held:
+            self.graphics.drawButtonOutline(self.x + 0.05, self.y + 0.05, self.sx - 0.1, self.sy - 0.1)
         
     def event(self, event):
         super().event(event)
         if self.graphics.isInZone(float(event.data["x"]), float(event.data["y"]), self.x, self.y, self.x + self.sx, self.y + self.sy):
-            (self.callback)()
+            self.held = True
+            if event.type & events.EventType.TOUCH_RELEASE:
+                (self.callback)()
+        if event.type & events.EventType.TOUCH_RELEASE:
+            self.held = False
 
 class Interface_Text(Interface_Element):
     def __init__(self, graphics, x, y, textSource):
@@ -183,9 +190,10 @@ class Interface:
             for element in inter.elements:
                 element.tick()
 
-    async def event(self, event):
+    def event(self, event):
         for element in self.elements:
             element.event(event)
+        events.EventHandler._current_EventHandler.trigger_event(events.EventType.GRAPHIC_UPDATE)
     
     def getGraphics(self):
         return self.graphics
