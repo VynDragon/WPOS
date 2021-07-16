@@ -2,7 +2,7 @@ import machine
 import micropython
 import struct
 import focaltouch
-import tasks
+import tasks, profiling
 
 
 class EventType:
@@ -46,6 +46,7 @@ class EventHandler:
         machine.Pin(35, machine.Pin.IN).irq(handler = EventHandler.IRQ_AXP202, trigger = machine.Pin.IRQ_FALLING, wake = machine.SLEEP | machine.DEEPSLEEP)
 
     def processSubscritionForEvent(self, event):
+        #if self.stopped or event.type == EventType.GRAPHIC_UPDATE:
         if self.stopped:
             return
         for function, filter, instance in self.subscribed_async:
@@ -105,6 +106,9 @@ class EventHandler:
 
     def trigger_event(self, type):
         self.processSubscritionForEvent(Event(type))
+        
+    def trigger_event_args(self, type, **args):
+        self.processSubscritionForEvent(Event(type, **args))
     
     def subscribe_async(self, function, filter, classinstance = None):
         self.subscribed_async.append((function, filter, classinstance))

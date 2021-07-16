@@ -1,4 +1,4 @@
-import tasks, events, communications, interface
+import tasks, events, communications, interface, profiling
 import machine, utime, struct, ntptime, ujson
 
 
@@ -125,6 +125,51 @@ class SettingsProviderService(tasks.Service):
     def set(key, value):
         SettingsProviderService._current_SettingProviderSvc.settings["key"] = value
         SettingsProviderService._current_SettingProviderSvc.changed = True
+        
+class SettingsService(tasks.Service):
+
+    _current_SettingsSvc = None
+    maxBrightnessVoltage = 3300
+    minBrightnessVoltage = 2500
+    BrightnessSteps = 8
+    
+    
+    def __init__(self, pmu):
+        super().__init__("SettingsService", 4)
+        self.brightness = 5
+        self.pmu = pmu
+    
+    def start(self):
+        super().start()
+        SettingsService._current_SettingsSvc = self
+        self.brightness = SettingsProviderService.get("Brightness")
+        if self.brightness is None:
+            self.setBrightness(5)
+        else:
+            self.setsetBrightness()
+        
+    def stop(self):
+        super().stop()
+    
+    def process(self):
+        pass
+      
+    def setsetBrightness(self):
+        self.pmu.setLDO2Voltage(SettingsService.minBrightnessVoltage + ((SettingsService.maxBrightnessVoltage - SettingsService.minBrightnessVoltage) / SettingsService.BrightnessSteps) * self.brightness)
+      
+    def setBrightness(self, value):
+        if value < 0:
+            value = 0
+        if value > SettingsService.BrightnessSteps - 1:
+            value = SettingsService.BrightnessSteps - 1
+        self.brightness = value
+        SettingsProviderService.set("Brightness", self.brightness)
+        self.setsetBrightness()
+    
+    def getBrightness(self):
+        return self.brightness
+   
+
 
 """ THIS IS FOR THE ESP32 RTC, WE DONT USE THE PCF YET.
 apparently it's really shit at keeping time tho"""
@@ -168,7 +213,6 @@ class TimeService(tasks.Service):
         if mem == b'':
             return bytearray(length)
         return mem[offset : offset+length]
-
 
     def process(self):
         super().process()
@@ -226,6 +270,9 @@ class TestService(tasks.Service):
 
 
 class AppService(tasks.Service):
+    
+    _current_AppSvc = None
+
     def __init__(self, graphics):
         super().__init__("AppService", 0, suspend_is_stop = False)
         self.appslist = []
@@ -238,24 +285,25 @@ class AppService(tasks.Service):
         print("started: " + str(app))
         return app
         
-    def stopApp(self):
+    def stopLastApp(self):
         self.appslist[-1].stop()
         stopped = self.appslist.pop()
         print("stopped: " + str(stopped))
     
     def start(self):
         super().start()
+        AppService._current_AppSvc = self
         self.startApp("main")
         
     def stop(self):
         super().stop()
-        while len(appslist) > 0:
-            self.stopApp(self.appslist[-1])
+        while len(self.appslist) > 0:
+            self.stopLastApp()
             
     def event(self, event):
-        if event.type == events.EventType.BUTTON_LONG:
+        if event.type == events.EventType.BUTTON:
             if len(self.appslist) > 1:
-                self.stopApp(self.appslist[-1])
+                self.stopLastApp()
         elif event.type == events.EventType.GRAPHIC_UPDATE:
             self.appslist[-1].update()
         else:
@@ -270,10 +318,9 @@ class AppService(tasks.Service):
     def unsuspend(self):
         """ do something after sleeping
         derived must call parent's"""
-
     def process(self):
         if len(self.appslist) < 1:
             raise RuntimeError("Bad AppHandler Status")
         if self.appslist[-1].process() != 0:
-            self.stopApp()
+            self.stopLastApp()
         return None

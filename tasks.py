@@ -1,4 +1,5 @@
 import utime
+import profiling
 
 """milliseconds"""
 SERVICEFREQUENCY = 10

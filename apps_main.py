@@ -14,7 +14,7 @@ class App:
         self.mainScreen.addElement(interface.Interface_TextHuge(graphics, 0.45, 0.25, services.TimeService._current_TimeSvc.getMinutes))
         self.mainScreen.addElement(interface.Interface_TextHuge(graphics, 0.5833, 0.25, ":"))
         self.mainScreen.addElement(interface.Interface_TextHuge(graphics, 0.65, 0.25, services.TimeService._current_TimeSvc.getSeconds))
-        self.mainScreen.addElement(interface.Interface_Button(graphics, 0, 0.75, 0.5, 0.25, callback = self.test_scanBLE, textSource = "BLE SCAN"))
+        self.mainScreen.addElement(interface.Interface_Button(graphics, 0, 0.75, 0.5, 0.25, callback = self.startMenu, textSource = "Menu"))
         self.mainScreen.addInterjectionInterface(services.OverlayProviderService._current_OverlayProviderService)
     
     def stop(self):
@@ -36,6 +36,9 @@ class App:
     
     def test_scanBLE_callback(self, ble):
         ble.gap_scan(10000)
+        
+    def startMenu(self):
+        services.AppService._current_AppSvc.startApp("menu")
         
         
 app = App()

@@ -1,4 +1,4 @@
-import tasks, events, interface, communications, services
+import tasks, events, interface, communications, services, profiling
 import utime, machine, micropython, usys, uio
 import axp202, constants_axp202, st7789, pcf8563, esp32, esp
 
@@ -17,7 +17,7 @@ Timer 0 reserved for main loop
 """ deepsleep after ... ms"""
 _deepsleepTime = 1800000 # half a hour
 #_deepsleepTime = 5000
-_mainPeriod = 300
+_mainPeriod = 100
 
 class Main:
     _main = None
@@ -34,25 +34,28 @@ class Main:
         self.mainTimer = None
         self.overlaySvc = None
         self.settingsSvc = None
+        self.settingsProviderSvc = None
         self.appSvc = None
     
     def start_display(self):
-        display_spi = machine.SPI(1,baudrate=32000000,sck=machine.Pin(18, machine.Pin.OUT),mosi=machine.Pin(19, machine.Pin.OUT))
+        display_spi = machine.SPI(1,baudrate=4000000,sck=machine.Pin(18, machine.Pin.OUT),mosi=machine.Pin(19, machine.Pin.OUT))
         #self.display = st7789.ST7789(screen_spi,240,240,cs=machine.Pin(5, machine.Pin.OUT),dc=machine.Pin(27, machine.Pin.OUT),backlight=machine.Pin(12, machine.Pin.OUT),rotation=2,buffer_size=16*32*2)
         # not very clean we have 2x100 kb buffers :/ one for the framebuf and one for the lib
-        self.display = st7789.ST7789(display_spi, 240,240,cs=machine.Pin(5, machine.Pin.OUT),dc=machine.Pin(27, machine.Pin.OUT),backlight=machine.Pin(12, machine.Pin.OUT),rotation=2,buffer_size=240*240*2)
+        cs = machine.Pin(5, machine.Pin.OUT)
+        dc = machine.Pin(27, machine.Pin.OUT)
+        self.display = st7789.ST7789(display_spi, 240,240,cs=cs,dc=dc,backlight=machine.Pin(12, machine.Pin.OUT),rotation=2,buffer_size=240*240*2)
         self.display.init()
         # BackLight Power
         self.pmu.enablePower(axp202.AXP202_LDO2)
         self.pmu.setLDO2Voltage(2600)
         self.pmu.clearIRQ()
         self.pmu.disableIRQ(constants_axp202.AXP202_ALL_IRQ)
-        self.pmu.write_byte(constants_axp202.AXP202_POK_SET, 0x25)
+        self.pmu.write_byte(constants_axp202.AXP202_POK_SET, 0b00011001)  # power off time = 6s, longpress time = 1.5 seconds, timeout shutdow = yes
         self.pmu.enableIRQ(constants_axp202.AXP202_PEK_SHORTPRESS_IRQ)
-        self.pmu.enableIRQ(constants_axp202.AXP202_PEK_LONGPRESS_IRQ)
-        self.pmu.setShutdownTime(constants_axp202.AXP_POWER_OFF_TIME_65)
-        self.pmu.setlongPressTime(constants_axp202.AXP_LONGPRESS_TIME_2S)
-        self.pmu.setTimeOutShutdown(True)
+        self.pmu.enableIRQ(constants_axp202.AXP202_PEK_LONGPRESS_IRQ) 
+        #elf.pmu.setShutdownTime(constants_axp202.AXP_POWER_OFF_TIME_65)
+        #self.pmu.setlongPressTime(constants_axp202.AXP_LONGPRESS_TIME_2S)
+        #self.pmu.setTimeOutShutdown(True)
         #self.pmu.enableIRQ(constants_axp202.AXP202_ALL_IRQ)
         self.display.on()
         self.display.fill(st7789.BLACK)
@@ -60,8 +63,8 @@ class Main:
     def services_full(self):
         testsvc = services.TestService()
         self.serviceHandler.addService(testsvc)
-        self.settingsSvc = services.SettingsProviderService()
-        self.serviceHandler.addService(self.settingsSvc)
+        self.settingsProviderSvc = services.SettingsProviderService()
+        self.serviceHandler.addService(self.settingsProviderSvc)
         #self.eventHandler.subscribe_async(testsvc.buzz, events.EventType.TOUCH_RELEASE | events.EventType.TOUCH_HOLD, testsvc)
         self.powerSvc = services.PowerService()
         self.serviceHandler.addService(self.powerSvc)
@@ -77,6 +80,8 @@ class Main:
         self.overlaySvc = services.OverlayProviderService(self.graphics)
         self.serviceHandler.addService(self.overlaySvc)
         self.appSvc = services.AppService(self.graphics)
+        self.settingsSvc = services.SettingsService(self.pmu)
+        self.serviceHandler.addService(self.settingsSvc)
         
     
     def defineOverlays(self):
@@ -93,7 +98,8 @@ class Main:
         self.start_display()
         self.tm = interface.TextMode_st7789(self.display)
         self.tm.print("Power and Screen initialized")
-        machine.freq(80000000)
+        #machine.freq(80000000)
+        machine.freq(160000000)
         self.tm.print("CPU frequ: " + str(machine.freq()))
         self.tm.print("Flash Size: " + str(esp.flash_size()))
         self.tm.print("Unique ID: " + str(machine.unique_id()))
@@ -131,7 +137,8 @@ class Main:
     @staticmethod
     def IRQ_mainloop(what):
         micropython.schedule(Main.main_loop, Main._main)
-    
+
+    @profiling.timed_function
     def main_loop(self):
         '''self.eventHandler.process()
         self.serviceHandler.process()
@@ -139,7 +146,6 @@ class Main:
         if self.powerSvc.shouldSleep():
             self.main_lightSleep()'''
         try:
-            self.eventHandler.process()
             self.serviceHandler.process()
             if self.powerSvc.shouldSleep():
                 self.main_lightSleep()
@@ -194,16 +200,19 @@ class Main:
         self.mainTimer = machine.Timer(0)
         self.mainTimer.init(period=globals()["_mainPeriod"], mode=machine.Timer.PERIODIC, callback=Main.IRQ_mainloop)
         while True:
-            machine.idle()
+            self.eventHandler.process()
+            #machine.idle()
 
     def main_deepSleep(self):
+        print("Shutting down...")
         self.mainTimer.deinit()
         self.serviceHandler.stop()
+        print("Stopped Services...")
         self.pmu.disablePower(axp202.AXP202_LDO2)
         self.display.sleep_mode(True)
-        esp32.wake_on_ext0(machine.Pin(35, machine.Pin.IN, machine.Pin.PULL_UP), esp32.WAKEUP_ALL_LOW)
-        #esp32.wake_on_ext1((machine.Pin(35, machine.Pin.IN, machine.Pin.PULL_UP), ), esp32.WAKEUP_ALL_LOW)
-        machine.idle()
+        esp32.wake_on_ext0(machine.Pin(35, machine.Pin.IN), esp32.WAKEUP_ALL_LOW)
+        #esp32.wake_on_ext1(machine.Pin(35, machine.Pin.IN), esp32.WAKEUP_ALL_LOW)
+        print("Shutting down NOW!")
         """after waking up from lightsleep micropython doesnt disable timer wakeup.... so we set wakeuptime to 24 hours"""
         machine.deepsleep(86400000)
         
@@ -215,7 +224,7 @@ class Main:
         self.serviceHandler.suspend()
         self.pmu.disablePower(axp202.AXP202_LDO2)
         self.display.sleep_mode(True)
-        esp32.wake_on_ext0(machine.Pin(35, machine.Pin.IN, machine.Pin.PULL_UP), esp32.WAKEUP_ALL_LOW)
+        esp32.wake_on_ext0(machine.Pin(35, machine.Pin.IN), esp32.WAKEUP_ALL_LOW)
         #esp32.wake_on_ext1((machine.Pin(35, machine.Pin.IN, machine.Pin.PULL_UP), ), esp32.WAKEUP_ALL_LOW)
         machine.lightsleep(globals()["_deepsleepTime"])
         self.powerSvc.reset()
@@ -226,19 +235,9 @@ class Main:
         self.pmu.enablePower(axp202.AXP202_LDO2)
         self.mainTimer.init(period=globals()["_mainPeriod"], mode=machine.Timer.PERIODIC, callback=Main.IRQ_mainloop)
 
+print("Starting...")
+micropython.alloc_emergency_exception_buf(100)
 main = Main()
 main.main_full()
 
-
-"""graphics = interface.Interface_Graphics(tft)
-interfacee = interface.Interface(graphics)
-handler.subscribe_async(interfacee.event, interface)
-interfacee.addElement(interface.Interface_Button(graphics, 0.25,0.25,0.25,0.25, lambda: print("button pressed"), "button"))
-
-while True:
-    handler.process()
-    services.process()
-    interfacee.update()
-    interfacee.tick()
-    utime.sleep_ms(10)"""
 

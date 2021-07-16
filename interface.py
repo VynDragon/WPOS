@@ -4,6 +4,18 @@ import events
 import vga1_8x8
 import vga1_bold_16x32
 
+def write_cmd_st7789(spi, cs, dc, command, data):
+    cs.off()
+    if command != None:
+        dc.off()
+        spi.write(command.to_bytes(1, 'big'))
+    if data != None:
+        dc.on()
+        spi.write(data)
+    cs.on()
+
+
+
 class Interface_Graphics:
     def __init__(self, display, displaysizex = 240, displaysizey = 240):
         self.dsx = displaysizex
@@ -193,7 +205,8 @@ class Interface:
     def event(self, event):
         for element in self.elements:
             element.event(event)
-        events.EventHandler._current_EventHandler.trigger_event(events.EventType.GRAPHIC_UPDATE)
+        # Right now it takes 350 ms to do the blitting of the screen data (drawing in the buffer takes 4ms), so let's avoid that.
+        #events.EventHandler._current_EventHandler.trigger_event(events.EventType.GRAPHIC_UPDATE)
     
     def getGraphics(self):
         return self.graphics
